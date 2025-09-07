@@ -1,0 +1,3 @@
+**.Dockerignore
+**Taskfile.yml
+main_service\internal\clients\sso\certificates

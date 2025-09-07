@@ -1,0 +1,10 @@
+env: "local"
+rabbitmq_url: "amqp://restaurant:password@rabbitmq:5672/"
+queue_name: "notifications_queue"
+administrator_email: ""
+
+email:
+  host: "smtp.gmail.com"
+  port: 587
+  username: "" # email отправителя
+  password: "" # email app password
