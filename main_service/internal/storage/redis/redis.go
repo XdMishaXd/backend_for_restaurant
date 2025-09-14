@@ -5,9 +5,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"main_service/internal/storage"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+)
+
+const (
+	redisScript = `
+		-- KEYS[1] = userKey
+		-- KEYS[2] = tableKey
+		-- ARGV[1] = value
+		-- ARGV[2] = ttl (ms)
+
+		-- Проверяем, есть ли уже бронь у пользователя
+		if redis.call("EXISTS", KEYS[1]) == 1 then
+			return redis.error_reply("USER_ALREADY_BOOKED")
+		end
+
+		-- Проверяем, занят ли стол
+		if redis.call("EXISTS", KEYS[2]) == 1 then
+			return redis.error_reply("TABLE_ALREADY_BOOKED")
+		end
+
+		-- Добавляем бронь
+		redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
+		redis.call("SET", KEYS[2], ARGV[1], "PX", ARGV[2])
+		return "OK"
+	`
 )
 
 type RedisRepo struct {
@@ -16,6 +41,7 @@ type RedisRepo struct {
 
 type Booking struct {
 	TableID int64     `json:"table_id"`
+	UserID  int64     `json:"user_id"`
 	Time    time.Time `json:"booking_time"`
 }
 
@@ -35,26 +61,18 @@ func New(ctx context.Context, address string, password string, db int) (*RedisRe
 	return &RedisRepo{client: rdb}, nil
 }
 
-// SaveBooking сохраняет бронь, ключом является время
+// SaveBooking сохраняет бронь, ключом является время:столик:userID
 func (r *RedisRepo) SaveBooking(ctx context.Context, booking Booking) error {
 	const op = "storage.redis.SaveBooking"
 
-	booked, err := r.isTableBooked(ctx, booking.Time, booking.TableID)
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	if booked {
-		return storage.ErrTableIsBooked
-	}
+	userKey := fmt.Sprintf("booking:user:%d", booking.UserID)
+	tableKey := fmt.Sprintf("booking:%s:table%d:uid:%d",
+		booking.Time.Format("2006-01-02"),
+		booking.TableID,
+		booking.UserID,
+	)
 
-	date := booking.Time.Format("2006-01-02")
-	key := fmt.Sprintf("booking:%s:table%d", date, booking.TableID)
-
-	data, err := json.Marshal(booking)
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-
+	// TTL до конца дня
 	endOfBookingDay := time.Date(
 		booking.Time.Year(),
 		booking.Time.Month(),
@@ -68,51 +86,40 @@ func (r *RedisRepo) SaveBooking(ctx context.Context, booking Booking) error {
 		return storage.ErrPastDate
 	}
 
-	return r.client.Set(ctx, key, data, ttl).Err()
-}
-
-// IsTableBooked проверяет, можно ли бронировать
-func (r *RedisRepo) isTableBooked(ctx context.Context, checkTime time.Time, tableID int64) (bool, error) {
-	const op = "storage.redis.IsTableBooked"
-
-	date := checkTime.Format("2006-01-02")
-	key := fmt.Sprintf("booking:%s:table%d", date, tableID)
-
-	val, err := r.client.Get(ctx, key).Result()
-	if err == redis.Nil {
-		return false, nil // ключа нет — можно бронировать
-	}
+	data, err := json.Marshal(booking)
 	if err != nil {
-		return false, fmt.Errorf("%s: %w", op, err)
+		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	var booking Booking
-	if err := json.Unmarshal([]byte(val), &booking); err != nil {
-		return false, fmt.Errorf("%s: %w", op, err)
+	ttlMs := fmt.Sprintf("%d", ttl.Milliseconds())
+	_, err = r.client.Eval(ctx, redisScript,
+		[]string{userKey, tableKey},
+		string(data), ttlMs,
+	).Result()
+
+	if err != nil {
+		if strings.Contains(err.Error(), "USER_ALREADY_BOOKED") {
+			return fmt.Errorf("%s: %w", op, storage.ErrUserAlreadyBooked)
+		}
+		if strings.Contains(err.Error(), "TABLE_ALREADY_BOOKED") {
+			return fmt.Errorf("%s: %w", op, storage.ErrTableIsBooked)
+		}
+		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	startBlock := booking.Time.Add(-5 * time.Hour)
-	endBlock := time.Date(
-		booking.Time.Year(),
-		booking.Time.Month(),
-		booking.Time.Day(),
-		23, 59, 59, 0,
-		booking.Time.Location(),
-	)
-
-	if checkTime.After(startBlock) && checkTime.Before(endBlock.Add(time.Second)) {
-		return true, nil
-	}
-
-	return false, nil
+	return nil
 }
 
 // DeleteBooking удаляет бронь по времени и id стола
-func (r *RedisRepo) DeleteBooking(ctx context.Context, tableID int16, bookingTime time.Time) error {
-	date := bookingTime.Format("2006-01-02")
-	key := fmt.Sprintf("booking:%s:table%d", date, tableID)
+func (r *RedisRepo) DeleteBooking(ctx context.Context, booking Booking) error {
+	userKey := fmt.Sprintf("booking:user:%d", booking.UserID)
+	tableKey := fmt.Sprintf("booking:%s:table%d:uid:%d",
+		booking.Time.Format("2006-01-02"),
+		booking.TableID,
+		booking.UserID,
+	)
 
-	return r.client.Del(ctx, key).Err()
+	return r.client.Del(ctx, userKey, tableKey).Err()
 }
 
 // Close закрывает соединение с базой данных.

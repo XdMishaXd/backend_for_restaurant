@@ -107,6 +107,12 @@ func New(log *slog.Logger, authClient *grpc.Client, bookingService *bookingsrv.B
 				render.JSON(w, r, resp.Error("Table is already booked"))
 
 				return
+			} else if errors.Is(err, storage.ErrUserAlreadyBooked) {
+				log.Warn("failed to book table, user already has active booking")
+
+				render.JSON(w, r, resp.Error("user can't book more then 1 table"))
+
+				return
 			}
 
 			log.Error("failed to book table", slog.Any("err", err))

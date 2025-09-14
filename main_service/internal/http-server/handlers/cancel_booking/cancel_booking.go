@@ -10,6 +10,7 @@ import (
 	"main_service/internal/models"
 	"main_service/internal/storage"
 	"main_service/internal/storage/postgres"
+	"main_service/internal/storage/redis"
 	"net/http"
 	"time"
 
@@ -102,7 +103,13 @@ func New(
 			}
 		}
 
-		err = bookingService.CancelBooking(r.Context(), req.TableID, req.BookingTime)
+		booking := redis.Booking{
+			TableID: int64(req.TableID),
+			UserID:  int64(userID),
+			Time:    req.BookingTime,
+		}
+
+		err = bookingService.CancelBooking(r.Context(), booking)
 		if err != nil {
 			if errors.Is(err, storage.ErrBookingNotFound) {
 				log.Warn("booking not found", slog.Int64("tableID", int64(req.TableID)), slog.Time("bookingTime", req.BookingTime))

@@ -62,7 +62,7 @@ func New(log *slog.Logger, authClient *grpc.Client, bookingService *bookingsrv.B
 		if !isAdmin {
 			log.Warn("customer attempted to view the reservation", slog.Int("userID", int(userID)))
 
-			render.JSON(w, r, resp.Error("permisson denied"))
+			render.JSON(w, r, resp.Error("Permisson denied"))
 
 			return
 		}

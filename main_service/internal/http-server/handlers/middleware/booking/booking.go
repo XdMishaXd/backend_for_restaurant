@@ -17,7 +17,7 @@ type Postgres interface {
 
 type Redis interface {
 	SaveBooking(ctx context.Context, booking redis.Booking) error
-	DeleteBooking(ctx context.Context, tableID int16, bookingTime time.Time) error
+	DeleteBooking(ctx context.Context, booking redis.Booking) error
 }
 
 type RabbitMQ interface {
@@ -44,6 +44,7 @@ func (s *BookingService) BookTable(ctx context.Context, booking models.Booking) 
 		redis.Booking{
 			TableID: int64(booking.TableID),
 			Time:    booking.BookingTime,
+			UserID:  booking.UserID,
 		},
 	)
 	if err != nil {
@@ -57,12 +58,12 @@ func (s *BookingService) BookTable(ctx context.Context, booking models.Booking) 
 	return s.rabbitmq.SendNotification(ctx, booking)
 }
 
-func (s *BookingService) CancelBooking(ctx context.Context, tableID int16, bookingTime time.Time) error {
-	if err := s.postgres.DeleteBooking(ctx, tableID, bookingTime); err != nil {
+func (s *BookingService) CancelBooking(ctx context.Context, booking redis.Booking) error {
+	if err := s.postgres.DeleteBooking(ctx, int16(booking.TableID), booking.Time); err != nil {
 		return err
 	}
 
-	if err := s.redis.DeleteBooking(ctx, tableID, bookingTime); err != nil {
+	if err := s.redis.DeleteBooking(ctx, booking); err != nil {
 		return err
 	}
 
@@ -70,8 +71,8 @@ func (s *BookingService) CancelBooking(ctx context.Context, tableID int16, booki
 		ctx,
 		models.Booking{
 			UserID:      -1, // ! Если UserID == -1, то это отмена брони, в остальных случаях это новая бронь.
-			TableID:     tableID,
-			BookingTime: bookingTime,
+			TableID:     int16(booking.TableID),
+			BookingTime: booking.Time,
 		},
 	)
 }
